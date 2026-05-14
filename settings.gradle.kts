@@ -16,6 +16,8 @@ dependencyResolutionManagement {
     repositories {
         google()
         mavenCentral()
+        // JitPack — LiveKit Android pulls audioswitch from a commit-hash artifact here.
+        maven("https://jitpack.io")
     }
 }
 

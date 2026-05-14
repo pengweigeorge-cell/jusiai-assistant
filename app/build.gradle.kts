@@ -92,6 +92,9 @@ dependencies {
     implementation(libs.moshi)
     implementation(libs.moshi.kotlin)
 
+    // LiveKit (Android SDK + bundled WebRTC) — used by the AI call feature
+    implementation(libs.livekit.android)
+
     // Tests
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.junit)

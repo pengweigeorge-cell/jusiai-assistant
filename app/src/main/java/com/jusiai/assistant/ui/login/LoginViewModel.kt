@@ -55,6 +55,12 @@ class LoginViewModel(
         _state.update { it.copy(codeSent = false, otp = "", errorMessage = null) }
     }
 
+    /** Wipe all login UI state — used when the LoginScreen is re-entered
+     *  after a sign-out so the user always starts on the phone-input page. */
+    fun reset() {
+        _state.value = LoginUiState()
+    }
+
     fun sendOtp() {
         val phone = _state.value.phone
         if (!PHONE_REGEX.matches(phone)) {

@@ -4,6 +4,8 @@ import com.jusiai.assistant.BuildConfig
 import com.jusiai.assistant.data.auth.AuthInterceptor
 import com.jusiai.assistant.data.auth.SessionExpiredInterceptor
 import com.jusiai.assistant.data.auth.TokenStore
+import com.jusiai.assistant.feature.aicall.data.AiAgentApi
+import com.jusiai.assistant.feature.aicall.data.RoomApi
 import com.squareup.moshi.Moshi
 import com.squareup.moshi.kotlin.reflect.KotlinJsonAdapterFactory
 import okhttp3.OkHttpClient
@@ -46,6 +48,8 @@ class ApiClient(tokenStore: TokenStore) {
         .build()
 
     val authApi: AuthApi = retrofit.create(AuthApi::class.java)
+    val roomApi: RoomApi = retrofit.create(RoomApi::class.java)
+    val aiAgentApi: AiAgentApi = retrofit.create(AiAgentApi::class.java)
 
     private fun normalizedBaseUrl(raw: String): String =
         if (raw.endsWith("/")) raw else "$raw/"

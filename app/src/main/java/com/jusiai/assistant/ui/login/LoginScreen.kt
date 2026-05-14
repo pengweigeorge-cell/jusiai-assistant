@@ -58,6 +58,11 @@ fun LoginScreen(onLoggedIn: () -> Unit) {
     val viewModel: LoginViewModel = viewModel(factory = LoginViewModel.Factory(app))
     val state by viewModel.state.collectAsStateWithLifecycle()
 
+    // The LoginViewModel is activity-scoped, so a successful login leaves the
+    // OTP page's state behind. Reset on every (re)entry so sign-out always
+    // lands the user on the phone-input page.
+    LaunchedEffect(Unit) { viewModel.reset() }
+
     if (!state.codeSent) {
         PhoneInputPage(
             state = state,
