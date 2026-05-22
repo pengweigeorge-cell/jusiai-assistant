@@ -1,0 +1,165 @@
+# ---------------------------------------------------------------------------
+# JuSi AI Assistant — Rockchip RV1126B audio/video AI assistant client.
+#
+# Built on the LiveKit C++ SDK and the JuSi Meet device API backend. The GUI is
+# LVGL v8.4 rendered to the Linux framebuffer; the camera is V4L2 and audio is
+# ALSA — no SDL/GPU (the RV1126B has no 3D GPU).
+#
+# The LiveKit SDK is consumed as a *prebuilt* aarch64 shared library (it is a
+# large Rust + WebRTC tree that is cross-built separately, once). The .so files
+# are vendored in this repo's lib/ directory; LIVEKIT_SDK_DIR only needs to
+# point at the SDK source tree for its headers.
+#
+# Cross-compiled with the SDK's RV1126B toolchain:
+#   source <sdk>/scripts/env-rv1126b.sh
+#   cmake -S . -B build-rv1126b \
+#     -DCMAKE_TOOLCHAIN_FILE=<sdk>/cmake/toolchains/rv1126b-aarch64-linux-gnu.cmake \
+#     -DLIVEKIT_SDK_DIR=<sdk>
+# ---------------------------------------------------------------------------
+cmake_minimum_required(VERSION 3.20)
+
+project(jusiai-assistant VERSION 1.0.0 LANGUAGES C CXX)
+
+set(CMAKE_C_STANDARD 11)
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+
+if(NOT CMAKE_BUILD_TYPE)
+  set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
+endif()
+
+# Executable + the LiveKit shared libraries end up side by side; the
+# executable's RPATH is $ORIGIN so it loads them from its own directory.
+set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
+set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
+set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
+set(CMAKE_BUILD_RPATH "$ORIGIN")
+set(CMAKE_INSTALL_RPATH "$ORIGIN")
+set(CMAKE_BUILD_RPATH_USE_ORIGIN TRUE)
+
+list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
+
+# ---------------------------------------------------------------------------
+# LiveKit C++ SDK — prebuilt aarch64 shared libraries.
+#
+# The .so files are *vendored* in this project's lib/ directory: they are a
+# large Rust + WebRTC tree, cross-built separately and version-pinned here so
+# the app builds without the SDK build tree on hand. Headers still come from
+# the SDK source tree — point LIVEKIT_SDK_DIR at it.
+# ---------------------------------------------------------------------------
+set(LIVEKIT_SDK_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../livekit-sdk-cpp"
+    CACHE PATH "Path to the livekit-sdk-cpp source tree (for headers)")
+get_filename_component(LIVEKIT_SDK_DIR "${LIVEKIT_SDK_DIR}" ABSOLUTE)
+
+set(LIVEKIT_LIB_DIR "${CMAKE_CURRENT_SOURCE_DIR}/lib"
+    CACHE PATH "Directory holding the vendored prebuilt LiveKit .so files")
+
+if(NOT EXISTS "${LIVEKIT_SDK_DIR}/include/livekit/livekit.h")
+  message(FATAL_ERROR "LiveKit SDK headers not found under ${LIVEKIT_SDK_DIR}/include")
+endif()
+# Explicit paths — find_library() would be re-rooted into the cross sysroot.
+set(LIVEKIT_SO     "${LIVEKIT_LIB_DIR}/liblivekit.so")
+set(LIVEKIT_FFI_SO "${LIVEKIT_LIB_DIR}/liblivekit_ffi.so")
+if(NOT EXISTS "${LIVEKIT_SO}" OR NOT EXISTS "${LIVEKIT_FFI_SO}")
+  message(FATAL_ERROR
+    "Prebuilt liblivekit.so / liblivekit_ffi.so not found under "
+    "${LIVEKIT_LIB_DIR} — they are vendored in the repo's lib/ directory.")
+endif()
+
+# The executable links only liblivekit.so (whose SONAME is "liblivekit.so").
+# liblivekit_ffi.so is liblivekit.so's own dependency — it is staged next to
+# the executable and resolved at runtime via the $ORIGIN RPATH.
+add_library(livekit SHARED IMPORTED)
+set_target_properties(livekit PROPERTIES
+  IMPORTED_LOCATION "${LIVEKIT_SO}"
+  INTERFACE_INCLUDE_DIRECTORIES "${LIVEKIT_SDK_DIR}/include")
+
+# ---------------------------------------------------------------------------
+# Third-party dependencies
+#   LVGL / nlohmann-json : portable, fetched (or staged via FETCHCONTENT_SOURCE_DIR_*)
+#   OpenSSL / ALSA       : taken from the target sysroot
+#   V4L2 / fbdev / evdev : kernel uapi headers only, no library
+# ---------------------------------------------------------------------------
+find_package(Threads REQUIRED)
+find_package(OpenSSL REQUIRED)        # HTTPS for the device API (cpp-httplib)
+find_package(ALSA REQUIRED)           # microphone capture + speaker playback
+
+include(lvgl)                         # LVGL v8.4 — GUI toolkit
+include(json)                         # nlohmann/json — device API payloads
+
+# ---------------------------------------------------------------------------
+# jusiai-assistant executable
+# ---------------------------------------------------------------------------
+add_executable(jusiai-assistant
+  src/main.cpp
+  src/app_config.cpp
+  src/i18n.cpp
+  src/api/device_api_client.cpp
+  src/rtc/livekit_session.cpp
+  src/media/audio_io.cpp
+  src/media/alsa_setup.c
+  src/media/camera_io.cpp
+  src/core/assistant_controller.cpp
+  src/control/control_server.cpp
+  src/ui/lv_display.cpp
+  src/ui/ui_app.cpp
+  # Subset CJK UI fonts — generated by tools/gen_zh_font.js
+  assets/fonts/lv_font_zh_14.c
+  assets/fonts/lv_font_zh_16.c
+  assets/fonts/lv_font_zh_20.c
+)
+
+target_include_directories(jusiai-assistant PRIVATE
+  "${CMAKE_CURRENT_SOURCE_DIR}/src"
+  "${CMAKE_CURRENT_SOURCE_DIR}/third_party"  # vendored httplib.h
+)
+
+target_compile_definitions(jusiai-assistant PRIVATE
+  CPPHTTPLIB_OPENSSL_SUPPORT           # enable HTTPS in cpp-httplib
+  JUSIAI_VERSION="${PROJECT_VERSION}"
+)
+
+target_link_libraries(jusiai-assistant PRIVATE
+  livekit
+  lvgl
+  nlohmann_json::nlohmann_json
+  OpenSSL::SSL
+  OpenSSL::Crypto
+  ALSA::ALSA
+  Threads::Threads
+)
+
+# liblivekit.so pulls in liblivekit_ffi.so (and libwebrtc, baked into it);
+# let the linker find it transitively without making it a direct NEEDED of
+# our executable, and don't fail on its private undefined symbols.
+target_link_options(jusiai-assistant PRIVATE
+  -Wl,--allow-shlib-undefined
+  "-Wl,-rpath-link,${LIVEKIT_LIB_DIR}")
+
+if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+  target_compile_options(jusiai-assistant PRIVATE
+    -Wall -Wextra -Wno-unused-parameter
+    -Wno-deprecated-declarations)      # WebRTC legacy headers on newer GCC
+endif()
+
+# ---------------------------------------------------------------------------
+# Stage the LiveKit shared libraries next to the executable ($ORIGIN RPATH).
+# ---------------------------------------------------------------------------
+add_custom_command(TARGET jusiai-assistant POST_BUILD
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different
+          "${LIVEKIT_SO}" "$<TARGET_FILE_DIR:jusiai-assistant>"
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different
+          "${LIVEKIT_FFI_SO}" "$<TARGET_FILE_DIR:jusiai-assistant>"
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different
+          "${CMAKE_CURRENT_SOURCE_DIR}/assets/ca-certificates.crt"
+          "$<TARGET_FILE_DIR:jusiai-assistant>/ca-certificates.crt"
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different
+          "${CMAKE_CURRENT_SOURCE_DIR}/config/jusiai-assistant.conf"
+          "$<TARGET_FILE_DIR:jusiai-assistant>/jusiai-assistant.conf.sample"
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different
+          "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run.sh"
+          "$<TARGET_FILE_DIR:jusiai-assistant>/run.sh"
+  COMMENT "Staging LiveKit libraries, CA bundle, launcher and sample config")
+
+install(TARGETS jusiai-assistant RUNTIME DESTINATION bin)
